@@ -1,13 +1,14 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
-from collections import defaultdict
-from sklearn.linear_model import LinearRegression
+#Import all required libraries for the dashboard
+import streamlit as st  # Web dashboard framework
+import pandas as pd  # Data manipulation and analysis
+import numpy as np  # Numerical computations
+import plotly.express as px  # Interactive visualizations
+import plotly.graph_objects as go  # Advanced plotting
+from datetime import datetime, timedelta  # Date/time handling
+from collections import defaultdict  # Dictionary with default values
+from sklearn.linear_model import LinearRegression  # Machine learning model
 import warnings
-warnings.filterwarnings('ignore')
+warnings.filterwarnings('ignore')  # Hide warnings for cleaner output
 
 # --- Page config ---
 st.set_page_config(
@@ -25,17 +26,51 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown('<h1 class="main-header">🍕 Pizza Inventory Management Dashboard</h1>', unsafe_allow_html=True)
-st.markdown("### Fokus: KPIs und Zutaten-Nutzung")
+st.markdown('<h1 class="main-header">🍕 Smart Byte - Pizza Dashboard</h1>', unsafe_allow_html=True)
+st.markdown("### TechLabs Data Science Project - Winter 2025")
+
+# Add project introduction
+with st.expander("📖 About This Project", expanded=False):
+    st.markdown("""
+    **Welcome to the Pizza Inventory Optimization Dashboard!**
+
+    This project demonstrates key data science concepts applied to a real-world business problem:
+
+    🎯 **Problem**: How can a pizza restaurant optimize inventory to minimize waste while ensuring customer satisfaction?
+
+    📊 **Data**: 48,620 pizza orders from 2015 with 32 pizza types and 64 ingredients
+
+    🧠 **Methods Used**:
+    - **Machine Learning**: Linear regression for sales forecasting
+    - **Inventory Simulation**: FEFO (First Expired, First Out) logic
+    - **Optimization**: Bayesian optimization for parameter tuning
+    - **Data Visualization**: Interactive charts and dashboards
+
+    🔍 **Key Learning Areas**:
+    - Data preprocessing and feature engineering
+    - Time series forecasting
+    - Simulation modeling
+    - Business KPI calculation
+    - Dashboard development with Streamlit
+
+    **Navigation Guide**:
+    - 📊 **KPI Overview**: Explore business metrics and trends
+    - 📦 **Inventory Tracking**: Run simulations and optimize parameters
+    - 📈 **Sales Forecast**: Test ML predictions and plan future demand
+    """)
 
 # --- Load data ---
-@st.cache_data
+@st.cache_data  #This decorator caches the function result to avoid reloading data on every interaction
 def load_data():
     try:
+        #pd.read_excel() reads Excel files into a pandas DataFrame (like a table)
         df = pd.read_excel('Data Model - Pizza Sales.xlsx')
+        #Convert text dates to datetime objects for time-based analysis
         df["order_date"] = pd.to_datetime(df["order_date"])
+        #Data cleaning - replace corrupted characters and standardize ingredient names
         df['pizza_ingredients'] = df['pizza_ingredients'].str.replace('慛', 'N')
         df['pizza_ingredients'] = df['pizza_ingredients'].str.replace('Artichokes', 'Artichoke')
+        df['pizza_ingredients'] = df['pizza_ingredients'].str.replace('garlic', 'Garlic', case=False)
         return df
     except FileNotFoundError:
         st.error("❌ 'Data Model - Pizza Sales.xlsx' nicht gefunden.")
@@ -127,9 +162,12 @@ ingredient_masses_kg, shelf_life_days = get_ingredient_data()
 @st.cache_data
 def get_recipes(df):
     df_copy = df.copy()
+    #Split comma-separated ingredients into lists, removing extra spaces
     df_copy['ingredient_list'] = df_copy['pizza_ingredients'].str.split(',').apply(
-        lambda lst: [ing.strip() for ing in lst]
+        lambda lst: [ing.strip() for ing in lst]  # lambda = anonymous function to clean each ingredient
     )
+    #Create dictionary mapping pizza names to their ingredient lists
+    # drop_duplicates removes repeated pizza recipes, set_index makes pizza_name the key
     recipes_dict = df_copy[['pizza_name','ingredient_list']].drop_duplicates('pizza_name') \
         .set_index('pizza_name')['ingredient_list'].to_dict()
     return recipes_dict
@@ -139,19 +177,27 @@ recipes_dict = get_recipes(df)
 # --- Daily ingredient usage (for Ingredient page) ---
 @st.cache_data
 def calculate_daily_usage(df, recipes_dict, ingredient_masses_kg):
+    #Complex data transformation to calculate daily pizza demand
+    # set_index makes order_date the index, groupby groups by pizza type
+    # resample('D') groups by day, unstack pivots pizza names to columns
     daily_demand_pizzas = df.set_index('order_date').groupby('pizza_name')['quantity'] \
         .resample('D').sum().unstack(level=0).fillna(0)
 
+    #Set comprehension to get all unique ingredients from all recipes
     all_ingredients = sorted({ing for ings in recipes_dict.values() for ing in ings})
+    #Create empty DataFrame with dates as rows and ingredients as columns
     ingredient_usage = pd.DataFrame(index=daily_demand_pizzas.index,
                                     columns=all_ingredients, dtype=float).fillna(0.0)
 
-    for date in daily_demand_pizzas.index:
-        for pizza_name in daily_demand_pizzas.columns:
-            qty = daily_demand_pizzas.loc[date, pizza_name]
+    #Double loop to calculate ingredient usage for each day
+    for date in daily_demand_pizzas.index:  # Loop through each day
+        for pizza_name in daily_demand_pizzas.columns:  # Loop through each pizza type
+            qty = daily_demand_pizzas.loc[date, pizza_name]  # How many of this pizza on this day
             if qty > 0 and pizza_name in recipes_dict:
+                #For each ingredient in this pizza's recipe
                 for ing in recipes_dict[pizza_name]:
                     if ing in ingredient_masses_kg:
+                        #Add ingredient weight (quantity × weight per pizza)
                         ingredient_usage.loc[date, ing] += qty * ingredient_masses_kg[ing]
     return ingredient_usage
 
@@ -161,19 +207,23 @@ daily_ingredient_usage = calculate_daily_usage(df, recipes_dict, ingredient_mass
 @st.cache_data
 def prepare_forecasting_data(df):
     """Prepare daily aggregated data for forecasting"""
+    #Group all orders by date and calculate daily totals
     daily_sales = df.groupby('order_date').agg({
-        'quantity': 'sum',
-        'total_price': 'sum',
-        'order_id': 'nunique'
+        'quantity': 'sum',        # Total pizzas sold per day
+        'total_price': 'sum',     # Total revenue per day
+        'order_id': 'nunique'     # Number of unique orders per day
     }).reset_index()
 
+    #Rename columns to be more descriptive
     daily_sales.columns = ['date', 'pizzas_sold', 'revenue', 'orders_count']
     daily_sales['avg_order_value'] = daily_sales['revenue'] / daily_sales['orders_count']
-    daily_sales['weekday'] = daily_sales['date'].dt.day_name()
-    daily_sales['day_of_year'] = daily_sales['date'].dt.dayofyear
-    daily_sales['week_of_year'] = daily_sales['date'].dt.isocalendar().week
-    daily_sales['month'] = daily_sales['date'].dt.month
-    daily_sales['is_weekend'] = daily_sales['date'].dt.weekday >= 5
+
+    #Feature engineering - create time-based features for ML model
+    daily_sales['weekday'] = daily_sales['date'].dt.day_name()  # Monday, Tuesday, etc.
+    daily_sales['day_of_year'] = daily_sales['date'].dt.dayofyear  # 1-365
+    daily_sales['week_of_year'] = daily_sales['date'].dt.isocalendar().week  # 1-52
+    daily_sales['month'] = daily_sales['date'].dt.month  # 1-12
+    daily_sales['is_weekend'] = daily_sales['date'].dt.weekday >= 5  # True/False
 
     return daily_sales
 
@@ -182,11 +232,13 @@ def create_features_for_forecasting(data):
     """Create numerical features for forecasting models"""
     features_df = data.copy()
 
+    #Convert text weekdays to numbers for machine learning
     weekday_mapping = {'Monday': 1, 'Tuesday': 2, 'Wednesday': 3, 'Thursday': 4,
                       'Friday': 5, 'Saturday': 6, 'Sunday': 7}
     features_df['weekday_num'] = features_df['weekday'].map(weekday_mapping)
 
-    # Cyclical encoding for seasonal patterns
+    #Cyclical encoding - converts circular patterns (days, weeks) to sin/cos
+    # This helps ML models understand that Dec 31 is close to Jan 1
     features_df['day_sin'] = np.sin(2 * np.pi * features_df['day_of_year'] / 365)
     features_df['day_cos'] = np.cos(2 * np.pi * features_df['day_of_year'] / 365)
     features_df['week_sin'] = np.sin(2 * np.pi * features_df['weekday_num'] / 7)
@@ -200,12 +252,13 @@ def train_forecasting_models(df):
     daily_sales = prepare_forecasting_data(df)
     forecast_data = create_features_for_forecasting(daily_sales)
 
+    #Define which columns to use as input features for the ML model
     feature_cols = ['day_of_year', 'weekday_num', 'month', 'is_weekend',
                     'day_sin', 'day_cos', 'week_sin', 'week_cos']
 
-    # Split data (80% train, 20% test)
-    split_idx = int(len(forecast_data) * 0.8)
-    train_data = forecast_data.iloc[:split_idx]
+    #Split data into training and testing sets (80%/20% split)
+    split_idx = int(len(forecast_data) * 0.8)  # 80% for training
+    train_data = forecast_data.iloc[:split_idx]  # First 80% of data
 
     X_train = train_data[feature_cols]
     y_train_pizzas = train_data['pizzas_sold']
@@ -312,7 +365,7 @@ def simulate_inventory_fixed(df, inventory_params, recipes_dict, ingredient_mass
     """
     from collections import defaultdict
 
-    # Extract parameters with clear names
+    #Extract parameters from DataFrame and convert to dictionaries for easy lookup
     alarm_threshold_kg = {k: float(v) for k, v in inventory_params['alarm_threshold_kg'].items()}
     restock_target_kg = {k: float(v) for k, v in inventory_params['restock_target_kg'].items()}
     expiry_days = {k: int(v) for k, v in inventory_params['expiry_days'].items()}
@@ -477,6 +530,7 @@ filtered_df = df[(df['order_date'].dt.date >= start_date) &
 if page == "📊 KPI Overview":
     st.header("📊 Business Overview")
 
+
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
@@ -524,14 +578,19 @@ if page == "📊 KPI Overview":
         st.metric("📋 Average Order Value", f"€{avg_order_value:.2f}")
 
     with col4:
+        #Set comprehension to count unique ingredients across all recipes
+        # The nested for loops flatten all ingredient lists into one set (removes duplicates)
         unique_ingredients = len({ing.strip() for recipe in recipes_dict.values() for ing in recipe})
         st.metric("🥕 Ingredients Managed", f"{unique_ingredients}")
         
 
 
+    #Create two-column layout for side-by-side charts
     col1, col2 = st.columns(2)
     with col1:
+        #Group by date and sum revenue for time series chart
         daily_revenue = filtered_df.groupby(filtered_df['order_date'].dt.date)['total_price'].sum()
+        #Create interactive line chart with Plotly
         fig_revenue = px.line(x=daily_revenue.index, y=daily_revenue.values,
                               title="📈 Daily Revenue Trend",
                               labels={'x': 'Date', 'y': 'Revenue (€)'})
@@ -539,7 +598,9 @@ if page == "📊 KPI Overview":
         st.plotly_chart(fig_revenue, use_container_width=True)
 
     with col2:
+        #Group by pizza name, sum quantities, get top 10
         top_pizzas = filtered_df.groupby('pizza_name')['quantity'].sum().nlargest(10)
+        #Create horizontal bar chart (orientation='h' makes it horizontal)
         fig_pizzas = px.bar(x=top_pizzas.values, y=top_pizzas.index, orientation='h',
                             title="🏆 Top 10 Most Popular Pizzas",
                             labels={'x': 'Quantity Sold', 'y': 'Pizza Name'})
@@ -553,12 +614,43 @@ elif page == "📦 Inventory Tracking":
     # Inventory tracking type selection
     tracking_type = st.selectbox(
         "Select tracking analysis:",
-        ["📊 Ingredient Usage Overview", "🎮 Inventory Simulation", "⚖️ Parameter Optimization", "📈 Performance Analysis"]
+        ["📊 Ingredient Usage Overview", "🎮 Inventory Simulation"]
     )
 
     if tracking_type == "📊 Ingredient Usage Overview":
         st.subheader("📊 Ingredient Usage & Risk Analysis")
 
+        #Debug section to check for missing ingredients
+        with st.expander("🔍 Debug: Ingredient Matching", expanded=False):
+            # Get all ingredients from recipes
+            all_recipe_ingredients = sorted({ing for ings in recipes_dict.values() for ing in ings})
+
+            # Get all ingredients from our predefined list
+            predefined_ingredients = sorted(ingredient_masses_kg.keys())
+
+            # Find ingredients in recipes but not in our predefined list
+            missing_from_predefined = set(all_recipe_ingredients) - set(predefined_ingredients)
+
+            # Find ingredients in predefined list but not used in any recipe
+            unused_predefined = set(predefined_ingredients) - set(all_recipe_ingredients)
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**Ingredients in recipes but missing from predefined list:**")
+                if missing_from_predefined:
+                    for ing in sorted(missing_from_predefined):
+                        st.write(f"• {ing}")
+                else:
+                    st.write("✅ All recipe ingredients are predefined")
+
+            with col2:
+                st.write("**Predefined ingredients not used in any recipe:**")
+                if unused_predefined:
+                    for ing in sorted(unused_predefined):
+                        st.write(f"• {ing}")
+                else:
+                    st.write("✅ All predefined ingredients are used")
+        
         period_usage = daily_ingredient_usage[
             (daily_ingredient_usage.index.date >= start_date) &
             (daily_ingredient_usage.index.date <= end_date)
@@ -643,6 +735,38 @@ elif page == "📦 Inventory Tracking":
 
         # Advanced parameters
         with st.expander("🔧 Advanced Parameters"):
+            # Display optimal scenarios first
+            st.subheader("🎯 Optimized Parameter Scenarios")
+            st.markdown("""
+            **📉 SCENARIO 1 - MINIMIZE LOST DEMAND:**
+            - Parameters: init=1.01, min=0.28, max=2.99
+
+            **♻️ SCENARIO 2 - MINIMIZE WASTE:**
+            - Parameters: init=1.01, min=0.15, max=1.75
+            """)
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                if st.button("📉 Use Lost Demand Optimal", key="use_lost_demand_optimal"):
+                    st.session_state.init_factor = 1.01
+                    st.session_state.min_factor = 0.28
+                    st.session_state.max_factor = 2.99
+
+            with col2:
+                if st.button("♻️ Use Waste Optimal", key="use_waste_optimal"):
+                    st.session_state.init_factor = 1.01
+                    st.session_state.min_factor = 0.15
+                    st.session_state.max_factor = 1.75
+
+            with col3:
+                if st.button("🔄 Reset to Default", key="reset_to_default"):
+                    st.session_state.init_factor = 2.2
+                    st.session_state.min_factor = 0.5
+                    st.session_state.max_factor = 0.95
+
+            st.divider()
+
             col1, col2 = st.columns(2)
 
             with col1:
@@ -662,9 +786,14 @@ elif page == "📦 Inventory Tracking":
                 parameter_multipliers = st.checkbox("Adjust Parameter Multipliers", value=False)
 
                 if parameter_multipliers:
-                    init_factor = st.slider("Starting Inventory Factor:", 1.0, 3.0, 2.2, 0.1)
-                    min_factor = st.slider("Alarm Threshold Factor:", 0.1, 1.0, 0.5, 0.1)
-                    max_factor = st.slider("Restock Target Factor:", 0.5, 2.0, 0.95, 0.05)
+                    # Use session state values if they exist, otherwise use defaults
+                    init_default = st.session_state.get('init_factor', 2.2)
+                    min_default = st.session_state.get('min_factor', 0.5)
+                    max_default = st.session_state.get('max_factor', 0.95)
+
+                    init_factor = st.slider("Starting Inventory Factor:", 1.0, 3.0, init_default, 0.01)
+                    min_factor = st.slider("Alarm Threshold Factor:", 0.1, 1.0, min_default, 0.01)
+                    max_factor = st.slider("Restock Target Factor:", 0.5, 3.0, max_default, 0.01)
                 else:
                     init_factor, min_factor, max_factor = 2.2, 0.5, 0.95
 
@@ -792,120 +921,228 @@ elif page == "📦 Inventory Tracking":
                             )
                             st.plotly_chart(fig_waste_breakdown, use_container_width=True)
 
-    elif tracking_type == "⚖️ Parameter Optimization":
-        st.subheader("⚖️ Inventory Parameter Optimization")
 
-        st.write("Find optimal inventory parameters to minimize waste and lost demand.")
+    elif tracking_type == "🎮 Inventory Simulation":
+        st.subheader("🎮 Interactive Inventory Simulation")
 
-        col1, col2 = st.columns(2)
+        st.write("Run inventory simulations with different parameters to see their impact on waste and lost demand.")
+
+        # Simulation parameters
+        col1, col2, col3 = st.columns(3)
 
         with col1:
-            optimization_objective = st.selectbox(
-                "Optimization Objective:",
-                ["Minimize Total Cost", "Minimize Lost Demand", "Minimize Waste", "Balance Both"]
-            )
-
-            optimization_trials = st.slider(
-                "Number of Optimization Trials:",
-                min_value=10, max_value=100, value=50,
-                help="More trials = better results but longer computation"
+            sim_start_date = st.date_input(
+                "Simulation Start Date:",
+                value=datetime(2015, 1, 1).date(),
+                min_value=datetime(2015, 1, 1).date(),
+                max_value=datetime(2015, 12, 31).date()
             )
 
         with col2:
-            alpha_weight = st.slider(
-                "Waste vs Lost Demand Weight:",
-                min_value=0.01, max_value=10.0, value=1.0, step=0.1,
-                help="Higher = prioritize waste reduction, Lower = prioritize demand fulfillment"
+            sim_end_date = st.date_input(
+                "Simulation End Date:",
+                value=datetime(2015, 3, 31).date(),
+                min_value=sim_start_date,
+                max_value=datetime(2015, 12, 31).date()
             )
 
-        if st.button("🔍 Run Optimization", key="run_optimization"):
-            st.info("🚧 Optimization feature coming soon! This would run Bayesian optimization to find optimal parameters.")
+        with col3:
+            sim_duration = (sim_end_date - sim_start_date).days
+            st.metric("Simulation Days", sim_duration)
 
-            # Placeholder for optimization results
-            st.subheader("📊 Optimization Results (Example)")
+        # Advanced parameters
+        with st.expander("🔧 Advanced Parameters"):
+            # Display optimal scenarios first
+            st.subheader("🎯 Optimized Parameter Scenarios")
+            st.markdown("""
+            **📉 SCENARIO 1 - MINIMIZE LOST DEMAND:**
+            - Parameters: init=1.01, min=0.28, max=2.99
 
-            example_results = pd.DataFrame({
-                'Parameter': ['Starting Inventory Factor', 'Alarm Threshold Factor', 'Restock Target Factor'],
-                'Current Value': [2.2, 0.5, 0.95],
-                'Optimized Value': [1.8, 0.3, 1.2],
-                'Improvement': ['-18%', '-40%', '+26%']
-            })
+            **♻️ SCENARIO 2 - MINIMIZE WASTE:**
+            - Parameters: init=1.01, min=0.15, max=1.75
+            """)
 
-            st.dataframe(example_results, use_container_width=True, hide_index=True)
+            col1, col2, col3 = st.columns(3)
 
-    elif tracking_type == "📈 Performance Analysis":
-        st.subheader("📈 Historical Performance Analysis")
+            with col1:
+                if st.button("📉 Use Lost Demand Optimal", key="use_lost_demand_optimal"):
+                    st.session_state.init_factor = 1.01
+                    st.session_state.min_factor = 0.28
+                    st.session_state.max_factor = 2.99
 
-        st.write("Analyze inventory performance across different time periods.")
+            with col2:
+                if st.button("♻️ Use Waste Optimal", key="use_waste_optimal"):
+                    st.session_state.init_factor = 1.01
+                    st.session_state.min_factor = 0.15
+                    st.session_state.max_factor = 1.75
 
-        # Period comparison
-        periods = {
-            "Q1 2015": ("2015-01-01", "2015-03-31"),
-            "Q2 2015": ("2015-04-01", "2015-06-30"),
-            "Q3 2015": ("2015-07-01", "2015-09-30"),
-            "Q4 2015": ("2015-10-01", "2015-12-31")
-        }
+            with col3:
+                if st.button("🔄 Reset to Default", key="reset_to_default"):
+                    st.session_state.init_factor = 2.2
+                    st.session_state.min_factor = 0.5
+                    st.session_state.max_factor = 0.95
 
-        if st.button("📊 Run Performance Analysis", key="performance_analysis"):
-            with st.spinner("Analyzing performance across quarters..."):
+            st.divider()
 
-                quarterly_results = []
+            col1, col2 = st.columns(2)
 
-                for quarter, (start, end) in periods.items():
-                    result = simulate_inventory_fixed(
-                        df=df,
-                        inventory_params=inventory_params,
-                        recipes_dict=recipes_dict,
-                        ingredient_masses_kg=ingredient_masses_kg,
-                        start_date=start,
-                        end_date=end,
-                        restock_interval_days=7,
-                        alarm_threshold=3
-                    )
+            with col1:
+                restock_interval = st.slider(
+                    "Restock Interval (days):",
+                    min_value=3, max_value=14, value=7,
+                    help="How often to restock ingredients"
+                )
 
-                    # Calculate period metrics
-                    period_orders = len(df[(df['order_date'] >= start) & (df['order_date'] <= end)])
-                    period_usage = daily_ingredient_usage[
-                        (daily_ingredient_usage.index >= start) &
-                        (daily_ingredient_usage.index <= end)
-                    ].sum().sum()
+                alarm_threshold = st.slider(
+                    "Weekly Alarm Threshold:",
+                    min_value=1, max_value=10, value=3,
+                    help="Number of weekly alarms needed to reduce restock interval"
+                )
 
-                    quarterly_results.append({
-                        'Quarter': quarter,
-                        'Lost Demand': result['lost_demand'],
-                        'Waste (kg)': result['waste_total_kg'],
-                        'Alarms': result['manual_alarms'],
-                        'Restock Events': result['restock_events'],
-                        'Lost Demand %': (result['lost_demand'] / period_orders * 100) if period_orders > 0 else 0,
-                        'Waste %': (result['waste_total_kg'] / period_usage * 100) if period_usage > 0 else 0
-                    })
+            with col2:
+                parameter_multipliers = st.checkbox("Adjust Parameter Multipliers", value=False)
 
-                quarterly_df = pd.DataFrame(quarterly_results)
+                if parameter_multipliers:
+                    # Use session state values if they exist, otherwise use defaults
+                    init_default = st.session_state.get('init_factor', 2.2)
+                    min_default = st.session_state.get('min_factor', 0.5)
+                    max_default = st.session_state.get('max_factor', 0.95)
 
-                # Display quarterly comparison
-                st.subheader("📅 Quarterly Performance Comparison")
-                st.dataframe(quarterly_df, use_container_width=True, hide_index=True)
+                    init_factor = st.slider("Starting Inventory Factor:", 1.0, 3.0, init_default, 0.01)
+                    min_factor = st.slider("Alarm Threshold Factor:", 0.1, 1.0, min_default, 0.01)
+                    max_factor = st.slider("Restock Target Factor:", 0.5, 3.0, max_default, 0.01)
+                else:
+                    init_factor, min_factor, max_factor = 2.2, 0.5, 0.95
 
-                # Performance charts
-                col1, col2 = st.columns(2)
+        if st.button("🚀 Run Inventory Simulation", key="run_simulation"):
+            with st.spinner("Running inventory simulation..."):
+
+                # Adjust parameters if needed
+                if parameter_multipliers:
+                    adjusted_params = inventory_params.copy()
+
+                    # Recalculate with new factors
+                    first_two_weeks = daily_ingredient_usage[
+                        (daily_ingredient_usage.index >= '2015-01-01') &
+                        (daily_ingredient_usage.index < '2015-01-15')
+                    ]
+                    first_three_months = daily_ingredient_usage[
+                        (daily_ingredient_usage.index >= '2015-01-01') &
+                        (daily_ingredient_usage.index < '2015-04-01')
+                    ]
+
+                    for ingredient in adjusted_params.index:
+                        starting_inv = first_two_weeks[ingredient].sum() * init_factor
+                        max_daily = first_three_months[ingredient].max()
+
+                        adjusted_params.loc[ingredient, 'starting_inventory_kg'] = starting_inv
+                        adjusted_params.loc[ingredient, 'restock_target_kg'] = max_daily * max_factor
+                        adjusted_params.loc[ingredient, 'alarm_threshold_kg'] = max_daily * min_factor
+
+                    simulation_params = adjusted_params
+                else:
+                    simulation_params = inventory_params
+
+                # Run simulation
+                result = simulate_inventory_fixed(
+                    df=df,
+                    inventory_params=simulation_params,
+                    recipes_dict=recipes_dict,
+                    ingredient_masses_kg=ingredient_masses_kg,
+                    start_date=sim_start_date.strftime('%Y-%m-%d'),
+                    end_date=sim_end_date.strftime('%Y-%m-%d'),
+                    restock_interval_days=restock_interval,
+                    alarm_threshold=alarm_threshold
+                )
+
+                # Display results
+                st.success("✅ Simulation completed!")
+
+                # Main metrics
+                col1, col2, col3, col4 = st.columns(4)
 
                 with col1:
-                    fig_quarterly_lost = px.bar(
-                        quarterly_df, x='Quarter', y='Lost Demand %',
-                        title="📉 Lost Demand Rate by Quarter"
-                    )
-                    st.plotly_chart(fig_quarterly_lost, use_container_width=True)
+                    st.metric("🍕 Lost Demand", f"{result['lost_demand']:,} pizzas")
 
                 with col2:
-                    fig_quarterly_waste = px.bar(
-                        quarterly_df, x='Quarter', y='Waste %',
-                        title="♻️ Waste Rate by Quarter"
-                    )
-                    st.plotly_chart(fig_quarterly_waste, use_container_width=True)
+                    st.metric("♻️ Total Waste", f"{result['waste_total_kg']:.1f} kg")
+
+                with col3:
+                    st.metric("🚨 Total Alarms", f"{result['manual_alarms']:,}")
+
+                with col4:
+                    st.metric("📦 Restock Events", f"{result['restock_events']:,}")
+
+                # Calculate performance percentages
+                total_orders = len(df[(df['order_date'] >= pd.to_datetime(sim_start_date)) &
+                                     (df['order_date'] <= pd.to_datetime(sim_end_date))])
+                period_usage = daily_ingredient_usage[
+                    (daily_ingredient_usage.index.date >= sim_start_date) &
+                    (daily_ingredient_usage.index.date <= sim_end_date)
+                ].sum().sum()
+
+                if total_orders > 0 and period_usage > 0:
+                    lost_demand_pct = (result['lost_demand'] / total_orders) * 100
+                    waste_pct = (result['waste_total_kg'] / period_usage) * 100
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric("📊 Lost Demand Rate", f"{lost_demand_pct:.1f}%")
+                    with col2:
+                        st.metric("📊 Waste Rate", f"{waste_pct:.1f}%")
+
+                # Daily performance charts
+                if result['daily_stats']:
+                    daily_df = pd.DataFrame(result['daily_stats'])
+                    daily_df['date'] = pd.to_datetime(daily_df['date'])
+
+                    col1, col2 = st.columns(2)
+
+                    with col1:
+                        fig_lost = px.line(
+                            daily_df, x='date', y='lost_demand',
+                            title="📉 Daily Lost Demand",
+                            labels={'lost_demand': 'Lost Pizzas', 'date': 'Date'}
+                        )
+                        st.plotly_chart(fig_lost, use_container_width=True)
+
+                    with col2:
+                        fig_waste = px.line(
+                            daily_df, x='date', y='cumulative_waste',
+                            title="♻️ Cumulative Waste",
+                            labels={'cumulative_waste': 'Waste (kg)', 'date': 'Date'}
+                        )
+                        st.plotly_chart(fig_waste, use_container_width=True)
+
+                # Waste breakdown by ingredient
+                if result['waste_kg']:
+                    st.subheader("🗂️ Waste Breakdown by Ingredient")
+
+                    waste_df = pd.DataFrame([
+                        {'Ingredient': ing, 'Waste_kg': waste}
+                        for ing, waste in result['waste_kg'].items()
+                        if waste > 0
+                    ]).sort_values('Waste_kg', ascending=False)
+
+                    if len(waste_df) > 0:
+                        col1, col2 = st.columns(2)
+
+                        with col1:
+                            st.dataframe(waste_df.head(10), use_container_width=True, hide_index=True)
+
+                        with col2:
+                            fig_waste_breakdown = px.bar(
+                                waste_df.head(10), x='Waste_kg', y='Ingredient',
+                                orientation='h',
+                                title="Top 10 Ingredients by Waste"
+                            )
+                            st.plotly_chart(fig_waste_breakdown, use_container_width=True)
+
 
 # --- Sales Forecast page ---
 elif page == "📈 Sales Forecast":
     st.header("📈 Sales Forecasting & Demand Prediction")
+
 
     # Forecast type selection
     forecast_type = st.selectbox(
@@ -917,10 +1154,11 @@ elif page == "📈 Sales Forecast":
         st.subheader("🎯 Predict Sales for a Specific Date")
 
         # Date input
+        st.info("💡 You can test predictions on historical dates (2015) or forecast future dates")
         target_date = st.date_input(
             "Select date for prediction:",
             value=datetime.now().date() + timedelta(days=1),
-            min_value=datetime.now().date(),
+            min_value=datetime(2015, 1, 1).date(),
             max_value=datetime.now().date() + timedelta(days=365)
         )
 
@@ -1033,26 +1271,31 @@ elif page == "📈 Sales Forecast":
                 critical_ingredients = sorted_ingredients[:3]
                 recommendations.append(f"🚨 CRITICAL: Ensure sufficient stock of top ingredients:")
                 for ingredient, qty in critical_ingredients:
-                    recommendations.append(f"  • {ingredient}: {qty:.1f} units")
+                    recommendations.append(f"- {ingredient}: {qty:.1f} units")
 
                 for rec in recommendations:
-                    st.write(f"• {rec}")
+                    st.write(f"- {rec}")
 
     elif forecast_type == "📊 Multi-Day Forecast":
         st.subheader("📊 Multi-Day Sales Forecast")
+
+        st.info("💡 You can test predictions on historical dates (2015) or forecast future dates")
 
         col1, col2 = st.columns(2)
         with col1:
             start_forecast = st.date_input(
                 "Start date:",
-                value=datetime.now().date() + timedelta(days=1)
+                value=datetime.now().date() + timedelta(days=1),
+                min_value=datetime(2015, 1, 1).date(),
+                max_value=datetime.now().date() + timedelta(days=365)
             )
 
         with col2:
             end_forecast = st.date_input(
                 "End date:",
                 value=datetime.now().date() + timedelta(days=7),
-                min_value=start_forecast
+                min_value=start_forecast,
+                max_value=datetime.now().date() + timedelta(days=365)
             )
 
         if st.button("📊 Generate Forecast", key="multi_day"):
@@ -1230,8 +1473,45 @@ elif page == "📈 Sales Forecast":
 
 # --- Footer ---
 st.markdown("---")
+
+with st.expander("🚀 Technical Implementation & Learning Resources", expanded=False):
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("""
+        **🛠️ Technologies Used**:
+        - **Python**: Main programming language
+        - **Streamlit**: Web dashboard framework
+        - **Pandas**: Data manipulation and analysis
+        - **Scikit-learn**: Machine learning models
+        - **Plotly**: Interactive visualizations
+        - **NumPy**: Numerical computations
+
+        **📊 Data Science Concepts**:
+        - **Exploratory Data Analysis (EDA)**
+        - **Feature Engineering**: Creating time-based features
+        - **Model Training & Validation**: 80/20 split
+        - **Business Metrics**: KPI calculation
+        """)
+
+    with col2:
+        st.markdown("""
+        **📚 Key Learning Outcomes**:
+        - Convert business problems to data problems
+        - Build end-to-end data science projects
+        - Create interactive dashboards
+        - Apply ML to real-world scenarios
+        - Understand inventory optimization
+        - Simulate business scenarios
+
+        **🔗 Next Steps for Learning**:
+        - Add more sophisticated optimization algorithms
+        - Integrate real-time data sources
+        """)
+
 st.markdown("""
-<div style='text-align: center; color: #666;'>
-  <p>🍕 Smart Byte Dashboard | Better overview over your data :)</p>
+<div style='text-align: center; color: #666; margin-top: 2rem;'>
+  <p>🍕 Pizza Inventory Management Dashboard | TechLabs Data Science Project Winter 2025</p>
+  <p><em>Demonstrating data science concepts through real-world business applications</em></p>
 </div>
 """, unsafe_allow_html=True)
