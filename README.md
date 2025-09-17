@@ -15,4 +15,4 @@ streamlit run Dashboard.py
 ```
 
 ### 3. Open Your Browser
-The dashboard will automatically open at `http://localhost:8501`
+The dashboard will automatically open at `http://localhost:XXXX`
