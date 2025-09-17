@@ -11,7 +11,7 @@ pip install -r requirements.txt
 
 ### 2. Run the Dashboard
 ```bash
-streamlit run dashboard.py
+streamlit run Dashboard.py
 ```
 
 ### 3. Open Your Browser
